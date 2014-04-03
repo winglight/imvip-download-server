@@ -1,0 +1,119 @@
+#!/bin/bash
+# This program package the original APK into a release-able format
+# .apk 
+# Parameters
+# Exit Code
+# 0     Execution completed successfully.
+# 1	Warning!
+# 255	Error!
+#
+
+# uncomment the following to enable debug output.
+###set +x
+
+##
+##
+##
+######
+version=$2
+export version
+
+##
+##
+##
+#####
+BASE_DIR=$(dirname $0)/..
+. $BASE_DIR/boot
+# read configuration
+. $CONF_DIR/imvipdlsvr.conf
+#
+#import libraries
+. $LIB_DIR/core || exit 255 
+. $LIB_DIR/core.android || exit 255 
+. $LIB_DIR/log || exit 255 
+
+
+
+#input order format
+if [ $(whoami) != "root" ];then
+	echo "Warning: You must be root to perform this operation"
+	exit 1
+fi
+# display help message and exit with error.
+if [ $# == 0 ];then 
+	echo "usage:  repo <command> [--version] [--program] " 
+	echo 
+	echo "The most commonly used commands:"
+	echo "  deploy    deploy specified client application to this server" 
+	echo "            syntax:"
+	echo "             deploy <app-version> <platform>"
+	echo "            example:"
+	echo "             repo deploy 1.0.2 android"
+	exit 255
+fi
+if [ $# == 1 ] || [ $# == 2 ] && [ $1 == "deploy" ]; then
+	echo "error: this command is not deploy or input command incorrect"
+	echo "Try './repo'"
+	exit 256
+fi
+if [ $# == 1 ] || [ $# == 2 ] && [ $1 != "deploy" ]; then
+	echo "error: this command is not deploy or input command incorrect"
+	echo "Try './repo'"
+	exit 255
+fi
+if  [ $# == 3 ] && [ $1 != "deploy" ];then
+	echo "error: this command is not deploy or input command incorrect"
+	echo "Try './repo'"
+	exit 255
+fi 
+if [ $# == 3 ] && [ $1 == "deploy" ];then
+	##data_src_dir is the source package dir
+	##data_src_dir is the latest_ver dir
+	data_src_dir=$DATA_DIR/src_pkg/$3
+	data_lastversion_dir=$DATA_DIR/latest_ver/$3
+	##cut android download address
+	##
+	var=`sed -n '/ANDROID_SRC_URL/P' $CONF_DIR/imvipdlsvr.conf | sed "s/||v||/$2/g"`
+	androidurl=`echo ${var#*ANDROID_SRC_URL=}`
+	##	
+	##test android-1.0.*.apk exit?
+	if [ -e $(build_android_srcpkg_path) ];then
+		echo "Warning:$3-$2.apk is exist!"
+		exit 1
+	fi	
+	##not exit download android-1.0.0.apk
+        tmp_dir=$(mktemp -d)
+	wget -P $tmp_dir $androidurl 
+	#download success move to DATA_DIR/src_pkg
+	if [ $? != 0 ]; then
+		echo "Warning:there is not the correct version program!"
+		echo  "Warning:DOWNLOAD IS FAILURE!"
+		exit 1
+	fi
+	if [ ! -d $data_src_dir ];then
+		mkdir $data_src_dir
+		sudo chown www-data:www-data $data_src_dir
+	fi
+	mv $tmp_dir/$3-$2.apk $data_src_dir
+	if [ $? != 0 ];then
+		echo "Warning:Moving havn't successful!"
+		sudo rm -r $tmp_dir
+		exit 2
+	fi
+	sudo rm -r $tmp_dir
+	#write verison to android
+	if [ ! -f $data_lastversion_dir ];then 
+		touch $data_lastversion_dir
+		sudo chown www-data:www-data $data_lastversion_dir
+		echo $2 > $data_lastversion_dir
+		echo "DOWNLOAD IS SUCCESSFUL!"
+		exit 0
+	fi
+	sudo chown www-data:www-data $data_lastversion_dir
+	echo $2 > $data_lastversion_dir
+	echo "DOWNLOAD IS SUCCESSFUL!"
+	exit 0
+fi
+
+echo "Invalid number of arguments"
+exit 1

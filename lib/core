@@ -1,0 +1,344 @@
+#!/bin/bash
+
+# vim:ts=2 sws=2
+
+#
+# This core library contains logic related to the IMVIP download server
+# which serves software packages for the IMVIP mobile application.
+#
+# @author cyril
+# @since 0.1.0
+#
+
+
+#
+# This function returns the proper client name. For unrecognized clients,
+# an empty string will be returned and an return code of 0 will be 
+# returned.
+#
+# @param $1 the client name
+# @return 0 if function is called without error, else otherwise.
+#
+function imvip_get_client() {
+	case "$1" in
+		"and")
+			echo "android"
+		;;
+
+		"iph")
+			echo "iphone"
+		;;
+
+		*)
+			echo ""
+		;;
+	esac
+}
+
+
+#
+# Check whether the given APP distribution code is valid. This function
+# will report error if the length is NOT between 1 to 20 (inclusive).
+#
+# @param $1 the application distribution code to check.
+# @return 0 if the code is valid, 1 if it is invalid.
+#
+function is_app_distrib_code_valid() {
+
+	local s="$1"
+	local n=${#s}
+
+	# return -1 if length no correct
+	test $n -lt 1 -o $n -gt 20 && return 1;
+	# check all is num or alpha
+	res=$(echo $1 | egrep '[^[:alnum:]]')
+	test $res && return 2;
+
+	# String correct.
+	return 0;
+}
+
+
+#
+# This function builds the absolute path of the locally stored package.
+#
+# The format varies between different client platforms. But general
+# format is in:
+#
+#  <client-specific-package>-<version>_<app-distribution-channel>.<client-specific-suffix>
+#
+#
+# This function requires the following variable to be set:
+# - client
+# - channel
+# - version
+#
+# @return 0 if this function is completed successfully, 1 otherwise.
+#
+function build_pkg_local_path() {
+
+	local s=
+
+	# base path containing client and client version.
+	s="$PKG_DIR/$client/$version"
+
+	# client specific package prefix.
+	case $client in
+		"android")
+			s="$s/android-${version}_$channel.apk"
+			;;
+		*)
+			# unrecognized client
+			return 1
+			;;
+	esac
+
+	# echo the path
+	echo "$s"
+	return 0
+}
+
+
+#
+# Checks if a package can be generated or not.
+#
+function get_pkg_genstate() {
+
+	# FIXME implements this logic to check package generation status.
+	
+	return 0
+}
+
+
+#
+# This function builds a package.
+#
+# @return 0 if function is invoked successfully, and a non-zero value 
+# represents an error:
+#   1: the package is being built by another process
+#   2: no source package exists
+# 255: internal error
+#
+function build_pkg() {
+	${client}_build_pkg
+	return $?
+}
+
+
+
+#
+# Checks whether the package can be generated.
+#
+# @return 0 if the package can be generated, else otherwise.
+#
+function is_pkg_generatable() {
+
+	local r=
+
+	is_android_pkg_generatable
+	r=$?
+
+	return $r
+
+}
+
+
+#
+# Returns the package status.
+# 
+# @return   0  if the package is ready to be served, 
+#           1  if the package is being built
+#           2  if the package can be generated
+#           3  package not found.
+#         255  if an error has occurred when determining status.
+#
+function get_pkg_status() {
+
+	local pkg_path= pkg_gen_status= can_gen_pkg=
+
+	# check if a static file is present.
+	pkg_path=$(build_pkg_local_path)
+	if [ $? -ne 0 ]; then
+		return 1
+	fi
+
+	# check if the file does exist
+	if [ -f $pkg_path ]; then
+		# report file exist.
+		return 0
+	fi
+
+	# there is a chance the file is being generated, so let's check.
+	# if so, we don't wait - just report server busy.
+	get_pkg_genstate
+	pkg_gen_status=$?
+	case $pkg_gen_status in	
+		0)	# the package is not being generated.
+			echo "" > /dev/null
+			;;
+		1)	# the package is being generated.
+			return 1	# return immediately
+			;;
+		2|*)	# error determining generation status.
+			return 255
+			;;
+	esac
+
+	# otherwise, check if the file can be generated.
+	is_pkg_generatable
+	can_gen_pkg=$?
+	if [ $can_gen_pkg -eq 0 ]; then
+		return 2	# can be generated
+	fi
+	
+	# not found
+	return 3
+}
+
+
+#
+# determine the latest version of the package for the client platform.
+#
+# current implementation checks a local file which contains the 
+# information. The file should contain one line of text which 
+# is the version information.
+#
+# @param $1 the client platform e.g. android
+# @return 0 if this function is successfully called, else otherwise.
+#
+function determine_pkg_latest_version() {
+
+	local meta_file= s=
+
+	# construct the path.
+	meta_file=$LOCAL_VERSION_INFO_DIR/$1
+
+	# if no meta file is present, return a empty version info.
+	if [ ! -f $meta_file ]; then
+		return 0
+	fi
+
+	# otherwise, read the first line
+	s=$(head -n 1 $meta_file)
+	echo "$s"
+
+	return 0
+}
+
+
+
+#
+# This function contains the core logic to handle the software 
+# package download.
+#
+# This function requires several global variable to be set. Or say, 
+# this function is just to prevent the main function to be cluttered
+# up.
+#
+# Required global variables.
+# - client
+# - channel
+#
+# @return 0 if function is executed successfully, else otherwise.
+#
+function handle_file_download() {
+
+	local pkg_status=0 r=
+
+
+	# determine the latest version for the client if not specified.
+	if [ "x$version" = "x" ]; then
+		version=$(determine_pkg_latest_version $client)
+		if [ $? -ne 0 ]; then
+			# failed to determine latest version of possible
+			# package.
+			return 1
+		fi
+	fi
+
+
+	# check if a static package is already prepared.
+	get_pkg_status
+	pkg_status=$?
+
+	# act according to the status
+	case $pkg_status in
+	0)		# a compiled package does exist.
+		# serve the package.
+		log "pre-built package found: $(basename `build_pkg_local_path`)"
+		serve_pkg $(build_pkg_local_path)
+		return 0
+		;;
+
+	1)		# the package is being built.
+		# we just report 'server busy'. poor us
+		emit_http_statuscode "500.13"
+		return 0
+		;;
+
+	2)		# package not built, but possible.
+		# kick start the building process
+		log "start building package: client=$client, version=$version, distrib. channel=$channel"
+		# TODO guard against multiple packaging on multiple request on the same
+		# file (client+version+channel+...)
+		build_pkg
+		r=$?
+		if [ $r -ne 0 ]; then
+			emit_http_statuscode 500
+			exit 1
+		else
+			# package is built, serve it.
+			serve_pkg $(build_pkg_local_path)
+		fi
+		return 0
+		;;
+
+	3)		# package not found.
+		# report package not found (HTTP status code 404)
+		log "no package is found for client=$client, version=$version, distrib. channel=$channel"
+		emit_http_statuscode 500
+		;;
+
+	# exception case
+	*)
+		log "unknown return code $pkg_status from get_pkg_status()"
+		emit_http_statuscode 500
+		;;
+	esac
+}
+
+
+#
+# Serve the package to the remote client.
+#
+# This will serve the specified file via HTTP, with proper HTTP header set.
+#
+# This function expect the following variables are set:
+# - client
+# - version
+# - channel
+#
+# @param $1 the file to serve
+# @return 0 if the function is completed successfully, else otherwise.
+#
+function serve_pkg() {
+
+	local filesize= filename=
+
+	# get the file size, in bytes.
+	filesize=$(stat -c %s $1)
+	filename=$(build_android_pkg_filename $version)
+	filename=$(basename $filename)
+
+	# output HTTP headers.
+	echo "Content-type: application/octet-stream"
+	echo "Content-Disposition: attachment; filename=\"${filename}\""
+	echo "Content-length: $filesize"
+	echo ""
+
+	# ... and stream the file to remote client!
+	cat $1
+
+	return 0
+}
+
